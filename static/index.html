@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#070a16">
+  <meta name="description" content="AI-powered urban mobility monitoring: citizen reports turned into a live, location-based city intelligence dashboard.">
+  <title>Citizen Mobility Intelligence – Listen to the City</title>
+
+  <!-- Fonts: display (Space Grotesk) + body (Inter) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Preloader (also hides itself with a pure-CSS failsafe) -->
+<div id="preloader" aria-hidden="true">
+  <div class="pl-ring"></div>
+  <p>Listening to the city…</p>
+</div>
+<canvas id="rain" aria-hidden="true"></canvas>
+<div id="flash" aria-hidden="true"></div>
+<div id="glow" aria-hidden="true"></div>
+<canvas id="flame" aria-hidden="true"></canvas>
+<!-- Decorative background + scroll progress -->
+<div class="bg" aria-hidden="true"><span class="orb orb-1"></span><span class="orb orb-2"></span></div>
+<div id="scrollProgress" class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar" id="topbar">
+  <div class="brand">
+    <span class="logo" aria-hidden="true">
+      <svg viewBox="0 0 32 32" width="32" height="32">
+        <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>
+        <path d="M16 2C9.4 2 4 7.2 4 13.7 4 22 16 30 16 30s12-8 12-16.3C28 7.2 22.6 2 16 2z" fill="url(#lg)"/>
+        <circle cx="16" cy="13.5" r="4.5" fill="#070a16"/>
+      </svg>
+    </span>
+    <div><strong class="brand-name">Citizen Mobility Intelligence</strong><p>Listen to the City · Chennai</p></div>
+  </div>
+
+  <nav id="tabs" aria-label="Main sections">
+    <button class="tab active" data-tab="dashboard" aria-current="page">📊 Dashboard</button>
+    <button class="tab" data-tab="report">📝 Report an Issue</button>
+    <button class="tab" data-tab="incidents">🚦 Incidents</button>
+    <button class="tab" data-tab="about">ℹ️ How it works</button>
+  </nav>
+
+  <div class="auth">
+    <span id="roleBadge" class="badge">Citizen view</span>
+    <button id="loginBtn" class="btn small">🔐 Official login</button>
+  </div>
+</header>
+
+<section id="filters" class="filters" aria-label="Filters">
+  <input id="fSearch" type="search" placeholder="🔎 Search area or text…" aria-label="Search area or text">
+  <select id="fCategory" aria-label="Category"><option value="">All categories</option></select>
+  <select id="fSeverity" aria-label="Severity">
+    <option value="">All severities</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option>
+  </select>
+  <select id="fStatus" aria-label="Status">
+    <option value="">Active + resolved</option>
+    <option value="unverified">Unverified</option><option value="verified">Verified</option>
+    <option value="resolved">Resolved</option><option value="rejected">Rejected</option>
+  </select>
+  <label class="dl">From <input id="fFrom" type="date"></label>
+  <label class="dl">To <input id="fTo" type="date"></label>
+  <button id="fReset" class="btn small">Reset</button>
+  <button id="fRefresh" class="btn small">⟳ Refresh</button>
+</section>
+
+<main id="main">
+
+  <!-- ================= DASHBOARD ================= -->
+  <section id="tab-dashboard" class="panel active">
+
+    <!-- Hero with interactive 3D globe -->
+    <div class="hero" id="hero">
+      <div class="hero-copy">
+        <span class="eyebrow" data-hero><i class="pulse-dot"></i> Live city mobility intelligence · Chennai</span>
+        <h1 class="hero-title" data-hero>Listen to the <span class="grad">city</span>.<br>Turn citizen voices into action.</h1>
+        <p class="hero-sub" data-hero>AI reads public transport reports, finds where and when problems happen, scores their severity and puts them on a live map for city officials.</p>
+        <div class="hero-cta" data-hero>
+          <button class="btn primary lg" data-goto="report">📝 Report an issue</button>
+          <button class="btn lg" data-scroll="#map">🗺 Explore live map</button>
+        </div>
+        <div class="hero-stats">
+          <div class="hstat" data-hero data-tilt><span id="hReports">0</span><small>Reports analysed</small></div>
+          <div class="hstat" data-hero data-tilt><span id="hIncidents">0</span><small>Incident groups</small></div>
+          <div class="hstat" data-hero data-tilt><span id="hHigh">0</span><small>High / Critical</small></div>
+        </div>
+        <p class="hero-note" data-hero>Reports stay <b>unverified</b> until an official confirms them.</p>
+      </div>
+      <div class="hero-3d" id="hero3d" aria-hidden="true"></div>
+    </div>
+
+    <div id="emptyBanner" class="banner" hidden>
+      <b>No reports yet.</b> Submit a report, or load realistic Chennai sample reports to see the system in action.
+      <button id="seedBtn" class="btn primary small">Load sample reports</button>
+      <button id="seedBig" class="btn primary small">Load 150-report demo dataset</button>
+    </div>
+
+    <div class="section-head reveal"><h2>City snapshot</h2><p>Key numbers across all current reports and filters.</p></div>
+    <div class="kpis">
+      <div class="kpi reveal" data-tilt><span id="kReports">0</span><label>Total reports</label></div>
+      <div class="kpi reveal" data-tilt><span id="kIncidents">0</span><label>Incident groups</label></div>
+      <div class="kpi danger reveal" data-tilt><span id="kHigh">0</span><label>High / Critical</label></div>
+      <div class="kpi ok reveal" data-tilt><span id="kVerified">0</span><label>Verified by officials</label></div>
+      <div class="kpi warn reveal" data-tilt><span id="kReview">0</span><label>Location needs review</label></div>
+      <div class="kpi gray reveal" data-tilt><span id="kFiltered">0</span><label>Filtered (not transport)</label></div>
+    </div>
+
+    <div class="grid2">
+      <div class="card reveal">
+        <div class="card-head"><h3>Live incident map</h3>
+          <div class="legend"><i style="background:#34d399"></i>Low <i style="background:#fbbf24"></i>Medium <i style="background:#fb923c"></i>High <i style="background:#f87171"></i>Critical <i style="background:#868e96"></i>Resolved</div>
+        </div>
+        <div id="map"></div>
+        <p class="hint">Circle size = number of reports. All incidents are <b>unverified</b> until an official confirms them.</p>
+      </div>
+      <div class="card reveal">
+        <div class="card-head"><h3>Priority incidents</h3></div>
+        <div id="priorityList" class="list"></div>
+      </div>
+    </div>
+
+    <div class="grid3">
+      <div class="card reveal" data-tilt><h3>Incidents by category</h3><div class="chart-box"><canvas id="chCategory"></canvas></div></div>
+      <div class="card reveal" data-tilt><h3>Reports – last 7 days</h3><div class="chart-box"><canvas id="chTrend"></canvas></div></div>
+      <div class="card reveal" data-tilt><h3>Most affected areas</h3><div class="chart-box"><canvas id="chAreas"></canvas></div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>Recent reports</h3>
+      <div id="recentList" class="list"></div>
+    </div>
+  </section>
+
+  <!-- ================= REPORT ================= -->
+  <section id="tab-report" class="panel">
+    <div class="section-head reveal"><h2>Report a transport problem</h2><p>Tell the city what you see. Our AI does the rest.</p></div>
+    <div class="grid2">
+      <div class="card reveal">
+        <h3>Your report</h3>
+        <p class="hint">Describe what you see: what happened, where, and when. Don't include phone numbers or personal details.</p>
+        <textarea id="reportText" rows="6" maxlength="1000" aria-label="Describe the problem" placeholder="e.g. Heavy waterlogging near Velachery railway station. Vehicles are moving very slowly."></textarea>
+        <div class="row between"><small id="charCount">0 / 1000</small>
+          <select id="reportSource" aria-label="Report source">
+            <option>Citizen app</option><option>Social post</option><option>News</option><option>Complaint portal</option>
+          </select>
+        </div>
+        <div class="row wrap">
+          <button id="previewBtn" class="btn">🔍 Preview analysis</button>
+          <button id="submitBtn" class="btn primary">📨 Submit report</button>
+          <button id="clearBtn" class="btn">Clear</button>
+        </div>
+        <p class="hint">Try an example:</p>
+        <div id="sampleChips" class="chips"></div>
+      </div>
+      <div class="card reveal">
+        <h3>AI analysis</h3>
+        <div id="resultBox"><p class="hint">Your report's analysis appears here: category, location, time, severity, sentiment and duplicate grouping.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= INCIDENTS ================= -->
+  <section id="tab-incidents" class="panel">
+    <div class="row between wrap section-head reveal">
+      <div><h2 id="incCount">Incidents</h2><p>Grouped reports, sorted by severity.</p></div>
+      <div class="row">
+        <button id="importBtn" class="btn small primary official-only">⬆ Import data</button>
+        <button id="exportBtn" class="btn small official-only">⬇ Export CSV</button>
+        <button id="resetBtn" class="btn small danger official-only">🗑 Clear all data</button>
+      </div>
+    </div>
+    <div id="incidentList" class="cards"></div>
+  </section>
+
+  <!-- ================= ABOUT ================= -->
+  <section id="tab-about" class="panel">
+    <div class="card prose reveal">
+      <h3>How Citizen Mobility Intelligence works</h3>
+      <ol>
+        <li><b>Collect</b> – citizens and permitted public sources submit reports.</li>
+        <li><b>Clean and filter</b> – personal data is removed; non-transport text is filtered out.</li>
+        <li><b>AI/NLP analysis</b> – category, issue, affected users, language (English/Tamil/Tanglish).</li>
+        <li><b>Location and time</b> – places are matched to map coordinates. Unknown places are flagged, never invented.</li>
+        <li><b>Severity and sentiment</b> – scored separately, with the reasons shown.</li>
+        <li><b>Duplicate grouping</b> – similar reports in the same place and time become one possible incident. Copy-pasted posts do not raise confidence.</li>
+        <li><b>Dashboard</b> – map, analytics and filters. Officials verify, resolve or reject incidents.</li>
+      </ol>
+      <p><b>Important:</b> severity is an estimate and reports are unverified until an official confirms them. This tool supports decisions; it does not replace official verification.</p>
+      <p>Official demo PIN: <code>1234</code> (set the <code>OFFICIAL_PIN</code> environment variable to change it).</p>
+      <div class="row wrap">
+        <button id="seedBtn2" class="btn primary">Load sample reports</button>
+        <button id="seedBig2" class="btn">Load 150-report demo dataset</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <p>Citizen Mobility Intelligence · Prototype for demonstration. Severity is an estimate and does not replace official verification. Map © OpenStreetMap contributors.</p>
+</footer>
+
+<div id="modal" class="modal" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true"><button class="close" id="modalClose" aria-label="Close">×</button><div id="modalBody"></div></div>
+</div>
+<div id="toasts" role="status" aria-live="polite"></div>
+
+<!-- Libraries (all via CDN) -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/vanilla-tilt/1.8.1/vanilla-tilt.min.js"></script>
+<!-- Order matters: app.js = your logic, script.js = visuals & motion -->
+<script src="app.js"></script>
+<script src="script.js"></script>
+<script src="fx.js"></script>
+</body>
+</html>
