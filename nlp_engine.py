@@ -207,27 +207,56 @@ def analyze_sentiment(text):
 
 
 def llm_extract(text):
-    """Optional: fills gaps if ANTHROPIC_API_KEY is set. Falls back silently on any error."""
-    key = os.environ.get("ANTHROPIC_API_KEY")
+    """Use Gemini to interpret an ambiguous mobility report. Returns None on failure."""
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not key:
         return None
+
+    model = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash").strip()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    system_prompt = (
+        "You are an information-extraction assistant for a Chennai citizen mobility incident system. "
+        "Read one citizen report. Decide whether it describes a real transport/mobility problem. "
+        "If relevant, choose exactly one category from: accident, congestion, waterlogging, "
+        "road_damage, public_transport, road_closure. Extract a place name only when the report "
+        "explicitly mentions it. Never guess a location. Normal traffic updates, praise, questions, "
+        "and unrelated messages are not incidents. Return only JSON with keys: relevant (boolean), "
+        "category (one allowed category or null), location (explicit place name or null)."
+    )
     try:
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+        response = requests.post(
+            url,
+            headers={"x-goog-api-key": key, "Content-Type": "application/json"},
             json={
-                "model": os.environ.get("CMI_LLM_MODEL", "claude-sonnet-5-5"),
-                "max_tokens": 300,
-                "system": ("You extract transport incident info from one citizen report in Chennai. Reply with ONLY JSON: "
-                           '{"relevant": true|false, "category": "accident|congestion|waterlogging|road_damage|public_transport|road_closure"|null, '
-                           '"location": "a place name explicitly mentioned"|null}. Never invent a location.'),
-                "messages": [{"role": "user", "content": text}],
+                "systemInstruction": {"parts": [{"text": system_prompt}]},
+                "contents": [{"parts": [{"text": text[:1000]}]}],
+                "generationConfig": {
+                    "responseMimeType": "application/json",
+                    "temperature": 0.1,
+                    "maxOutputTokens": 160,
+                },
             },
-            timeout=15,
+            timeout=12,
         )
-        out = r.json()["content"][0]["text"]
-        return json.loads(out[out.index("{"): out.rindex("}") + 1])
-    except Exception:
+        response.raise_for_status()
+        payload = response.json()
+        answer = payload["candidates"][0]["content"]["parts"][0]["text"]
+        result = json.loads(answer)
+        if not isinstance(result, dict):
+            return None
+        category = result.get("category")
+        if category not in CATEGORIES:
+            category = None
+        location = result.get("location")
+        if not isinstance(location, str) or not location.strip():
+            location = None
+        return {
+            "relevant": result.get("relevant") is True,
+            "category": category,
+            "location": location[:100] if location else None,
+        }
+    except (requests.RequestException, KeyError, IndexError, TypeError, ValueError):
+        # Keep the app usable if the free-tier quota is exhausted or the API is unavailable.
         return None
 
 
@@ -243,15 +272,17 @@ def analyze(text):
     if relevant or (cat is None and not normal):
         loc = find_location(clean) if relevant else loc
 
-    if os.environ.get("ANTHROPIC_API_KEY") and not normal and (cat is None or (relevant and loc["lat"] is None)):
+    # Gemini provides contextual interpretation when configured. The deterministic
+    # rules remain the fallback and are not overwritten when they already found a category.
+    if os.environ.get("GEMINI_API_KEY") and not normal:
         llm = llm_extract(clean)
         if llm:
-            engine = "rules+llm"
+            engine = "rules+gemini"
             if cat is None and llm.get("relevant") and llm.get("category") in CATEGORIES:
                 cat, relevant = llm["category"], True
                 loc = find_location(clean)
             if relevant and loc["lat"] is None and llm.get("location"):
-                l2 = locate_name(str(llm["location"]))
+                l2 = locate_name(llm["location"])
                 if l2["lat"] is not None or not loc["name"]:
                     loc = l2
 

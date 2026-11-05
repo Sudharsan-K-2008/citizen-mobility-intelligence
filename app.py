@@ -2,6 +2,9 @@ import csv
 import io
 import os
 import hmac
+
+from dotenv import load_dotenv
+load_dotenv()  # Load local .env before importing modules that read API keys.
 from datetime import datetime, timedelta
 from functools import wraps
 
