@@ -1,4 +1,4 @@
-# Enable Gemini in Citizen Mobility Intelligence
+# Enable Gemini in MADRITHM
 
 This project uses Gemini as an optional LLM assistant. The existing rule-based NLP remains active and is used automatically when Gemini is not configured or the API is unavailable.
 
