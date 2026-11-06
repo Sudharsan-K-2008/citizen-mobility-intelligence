@@ -81,13 +81,13 @@ def recompute_incident(conn, iid):
     conn.execute(
         """UPDATE incidents SET location_text=?, lat=?, lng=?, severity_score=?, severity_label=?,
            report_count=?, independent_count=?, confidence=?, avg_sentiment=?, first_seen=?, last_seen=? WHERE id=?""",
-        (loc_text, lat, lng, sev, severity_label(sev), len(rows), independent, round(max(conf, 0.0), 2),
+        (loc_text, lat, lng, sev, severity_label(sev), independent, independent, round(max(conf, 0.0), 2),
          round(sum(r["sentiment_score"] or 0 for r in rows) / len(rows), 2),
          min(r["incident_time"] for r in rows), max(r["incident_time"] for r in rows), iid))
 
 
-def submit_report(text, source="Citizen app", when=None):
-    a = analyze(text)
+def submit_report(text, source="Citizen app", when=None, language=None):
+    a = analyze(text, language_hint=language)
     now = datetime.now()
     now_s = now.strftime(FMT)
     # Imported history: use the supplied time unless the text itself states a time
@@ -111,6 +111,8 @@ def submit_report(text, source="Citizen app", when=None):
                     (a["category"], a["location_text"], a["lat"], a["lng"], "unverified",
                      a["incident_time"], a["incident_time"], now_s))
                 incident_id, created = cur.lastrowid, True
+                conn.execute("INSERT INTO incident_events (incident_id,event_type,details,created_at) VALUES (?,?,?,?)",
+                             (incident_id, "created", "Incident created from citizen report", now_s))
         cur = conn.execute(
             """INSERT INTO reports (text,text_hash,source,language,relevant,category,sub_issue,affected,location_text,
                lat,lng,geo_confidence,geo_method,incident_time,duration_min,sentiment,sentiment_score,severity_score,
@@ -123,7 +125,9 @@ def submit_report(text, source="Citizen app", when=None):
         report_id = cur.lastrowid
         incident = None
         if incident_id:
+            conn.execute("INSERT INTO incident_events (incident_id,event_type,details,created_at) VALUES (?,?,?,?)",
+                         (incident_id, "report", f"New citizen report attached ({'duplicate copy' if is_copy else 'independent report'})", now_s))
             recompute_incident(conn, incident_id)
             row = conn.execute("SELECT * FROM incidents WHERE id=?", (incident_id,)).fetchone()
             incident = dict(row) if row else None
-    return {"report_id": report_id, "analysis": a, "incident": incident, "is_copy": bool(is_copy), "new_incident": created}
+    return {"report_id": report_id, "tracking_id": f"MDR-{report_id:06d}", "analysis": a, "incident": incident, "is_copy": bool(is_copy), "new_incident": created}

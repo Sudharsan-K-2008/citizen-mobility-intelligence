@@ -17,14 +17,14 @@ _D = r"(?:delay\w*|late|cancel\w*|not coming|not running|not available|breakdown
 
 CATEGORY_RULES = {
     "accident": (re.compile(r"\b(?:accident|collision|collided|crash(?:ed)?|overturned|rammed|pile-?up|ran over|vibathu)\b|விபத்து", re.I), 3),
-    "waterlogging": (re.compile(r"\b(?:water ?logg(?:ing|ed)|flood(?:ed|ing)?|inundat\w*|knee[- ]deep|water stagnat\w*|stagnant water|submerged|thanni (?:nikkudhu|ninnu))\b|வெள்ளம்", re.I), 3),
+    "waterlogging": (re.compile(r"\b(?:water ?logg(?:ing|ed)|flood(?:ed|ing)?|inundat\w*|knee[- ]deep|water stagnat\w*|stagnant water|submerged|water (?:has )?(?:accumulated|collected|gathered|pooled)|accumulation of water|standing water|thanni (?:nikkudhu|ninnu))\b|வெள்ளம்", re.I), 3),
     "road_damage": (re.compile(
         r"\b(?:potholes?|craters?|sinkhole|kuzhi|uneven road)\b"
         r"|\b(?:road|roads|street|flyover|bridge)\b[^.!?\n]{0,60}\b(?:damaged|broken|caved|cracked|bad condition)\b"
         r"|\b(?:damaged|broken|cracked)\s+(?:road|roads|street|flyover|bridge|surface)\b|குழி", re.I), 3),
     "road_closure": (re.compile(r"\b(?:road ?block(?:ed)?|blocked|closed|closure|barricad\w*|diversion|diverted|construction|roadwork|road work|metro work|digging|tree fell|fallen tree)\b", re.I), 2),
     "public_transport": (re.compile(rf"\b{_T}\b[^.!?\n]*\b{_D}\b|\b{_D}\b[^.!?\n]*\b{_T}\b", re.I), 2),
-    "congestion": (re.compile(r"\b(?:traffic|jam|jammed|congest\w*|gridlock|stuck|crawl\w*|slow(?:ly)?[- ]moving|moving (?:very )?slowly|bumper to bumper|nerisal)\b|நெரிசல்", re.I), 1),
+    "congestion": (re.compile(r"\b(?:traffic|jam|jammed|congest\w*|gridlock|stuck|crawl\w*|slow(?:ly)?[- ]moving|moving (?:very )?slowly|unable to move|cannot move|can.t move|not able to move|struggling to cross|unable to cross|vehicles? (?:cannot|can.t|unable to) pass|bumper to bumper|nerisal)\b|நெரிசல்", re.I), 1),
 }
 
 NORMAL_RX = re.compile(
@@ -99,6 +99,14 @@ def classify(text):
         n = len(rx.findall(text))
         if n:
             scores[cat] = weight * min(n, 2)
+    # Generic water accumulation is only a mobility incident when its context
+    # connects it to a public route, transport service, pedestrian movement or traffic.
+    generic_water = re.search(r"\b(?:water (?:has )?(?:accumulated|collected|gathered|pooled)|accumulation of water|standing water)\b", text, re.I)
+    mobility_context = re.search(
+        r"\b(?:road|roads|street|highway|bridge|flyover|underpass|subway|railway|station|bus|buses|train|metro|vehicle|vehicles|car|cars|bike|bikes|pedestrian|commuter|traffic|transport|move|moving|cross|crossing|pass|passage|route)\b",
+        text, re.I)
+    if generic_water and not mobility_context:
+        scores.pop("waterlogging", None)
     if not scores:
         return None, {}
     best = max(scores, key=lambda c: (scores[c], -PRIORITY.index(c)))
@@ -206,7 +214,7 @@ def analyze_sentiment(text):
     return label, round(score, 2)
 
 
-def llm_extract(text):
+def llm_extract(text, language_hint=None):
     """Use Gemini to interpret an ambiguous mobility report. Returns None on failure."""
     key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not key:
@@ -216,7 +224,8 @@ def llm_extract(text):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     system_prompt = (
         "You are an information-extraction assistant for a Chennai citizen mobility incident system. "
-        "Read one citizen report. Decide whether it describes a real transport/mobility problem. "
+        "Read one citizen report. The report may be written in English, Tamil, Hindi, Malayalam, Telugu, or a mixture. "
+        "Understand the original language; do not require English keywords. Decide whether it describes a real transport/mobility problem. "
         "If relevant, choose exactly one category from: accident, congestion, waterlogging, "
         "road_damage, public_transport, road_closure. Extract a place name only when the report "
         "explicitly mentions it. Never guess a location. Normal traffic updates, praise, questions, "
@@ -229,7 +238,7 @@ def llm_extract(text):
             headers={"x-goog-api-key": key, "Content-Type": "application/json"},
             json={
                 "systemInstruction": {"parts": [{"text": system_prompt}]},
-                "contents": [{"parts": [{"text": text[:1000]}]}],
+                "contents": [{"parts": [{"text": ("Citizen-selected language: " + str(language_hint or "auto") + "\nReport: " + text)[:1200]}]}],
                 "generationConfig": {
                     "responseMimeType": "application/json",
                     "temperature": 0.1,
@@ -260,9 +269,10 @@ def llm_extract(text):
         return None
 
 
-def analyze(text):
+def analyze(text, language_hint=None):
     clean = normalize(text)
-    lang = detect_language(clean)
+    allowed_languages = {"English", "Tamil", "Hindi", "Malayalam", "Telugu"}
+    lang = language_hint if language_hint in allowed_languages else detect_language(clean)
     sentiment, sent_score = analyze_sentiment(clean)
     cat, _ = classify(clean)
     normal = bool(NORMAL_RX.search(clean))
@@ -275,7 +285,7 @@ def analyze(text):
     # Gemini provides contextual interpretation when configured. The deterministic
     # rules remain the fallback and are not overwritten when they already found a category.
     if os.environ.get("GEMINI_API_KEY") and not normal:
-        llm = llm_extract(clean)
+        llm = llm_extract(clean, lang)
         if llm:
             engine = "rules+gemini"
             if cat is None and llm.get("relevant") and llm.get("category") in CATEGORIES:

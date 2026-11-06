@@ -60,6 +60,22 @@ CREATE TABLE IF NOT EXISTS geocache (
 CREATE INDEX IF NOT EXISTS idx_reports_incident ON reports(incident_id);
 CREATE INDEX IF NOT EXISTS idx_reports_hash ON reports(text_hash);
 CREATE INDEX IF NOT EXISTS idx_incidents_cat ON incidents(category, status);
+
+CREATE TABLE IF NOT EXISTS crowd_votes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    incident_id INTEGER NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+    voter_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(incident_id, voter_hash)
+);
+
+CREATE TABLE IF NOT EXISTS incident_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    incident_id INTEGER NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL,
+    details TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+);
 """
 
 

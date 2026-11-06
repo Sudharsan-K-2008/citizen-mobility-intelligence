@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#070a16">
-  <meta name="description" content="AI-powered urban mobility monitoring: citizen reports turned into a live, location-based city intelligence dashboard.">
+  <meta name="description" content="MADRITHM turns citizen mobility complaints into structured, location-aware incident intelligence for human review.">
   <title>MADRITHM – Listen to the City</title>
 
   <!-- Fonts: display (Space Grotesk) + body (Inter) -->
@@ -81,12 +81,12 @@
     <!-- Hero with interactive 3D globe -->
     <div class="hero" id="hero">
       <div class="hero-copy">
-        <span class="eyebrow" data-hero><i class="pulse-dot"></i> Live city mobility intelligence · Chennai</span>
+        <span class="eyebrow" data-hero><i class="pulse-dot"></i> City mobility intelligence · Chennai</span>
         <h1 class="hero-title" data-hero>Listen to the <span class="grad">city</span>.<br>Turn citizen voices into action.</h1>
-        <p class="hero-sub" data-hero>AI reads public transport reports, finds where and when problems happen, scores their severity and puts them on a live map for city officials.</p>
+        <p class="hero-sub" data-hero>MADRITHM analyses citizen mobility reports, identifies where and how movement is affected, estimates severity and organises incidents for official review.</p>
         <div class="hero-cta" data-hero>
           <button class="btn primary lg" data-goto="report">📝 Report an issue</button>
-          <button class="btn lg" data-scroll="#map">🗺 Explore live map</button>
+          <button class="btn lg" data-scroll="#map">🗺 Explore incident map</button>
         </div>
         <div class="hero-stats">
           <div class="hstat" data-hero data-tilt><span id="hReports">0</span><small>Reports analysed</small></div>
@@ -106,17 +106,19 @@
 
     <div class="section-head reveal"><h2>City snapshot</h2><p>Key numbers across all current reports and filters.</p></div>
     <div class="kpis">
-      <div class="kpi reveal" data-tilt><span id="kReports">0</span><label>Total reports</label></div>
+      <div class="kpi reveal" data-tilt><span id="kReports">0</span><label>Unique reports (copies excluded)</label></div>
       <div class="kpi reveal" data-tilt><span id="kIncidents">0</span><label>Incident groups</label></div>
       <div class="kpi danger reveal" data-tilt><span id="kHigh">0</span><label>High / Critical</label></div>
       <div class="kpi ok reveal" data-tilt><span id="kVerified">0</span><label>Verified by officials</label></div>
       <div class="kpi warn reveal" data-tilt><span id="kReview">0</span><label>Location needs review</label></div>
       <div class="kpi gray reveal" data-tilt><span id="kFiltered">0</span><label>Filtered (not transport)</label></div>
+      <div class="kpi reveal" data-tilt><span id="kDuplicates">0</span><label>Duplicate copies</label></div>
     </div>
 
     <div class="grid2">
       <div class="card reveal">
-        <div class="card-head"><h3>Live incident map</h3>
+        <div class="card-head"><h3>Incident map</h3>
+          <button id="heatToggle" class="btn small" type="button" aria-pressed="false">🔥 Show density layer</button>
           <div class="legend"><i style="background:#34d399"></i>Low <i style="background:#fbbf24"></i>Medium <i style="background:#fb923c"></i>High <i style="background:#f87171"></i>Critical <i style="background:#868e96"></i>Resolved</div>
         </div>
         <div id="map"></div>
@@ -147,16 +149,32 @@
       <div class="card reveal">
         <h3>Your report</h3>
         <p class="hint">Describe what you see: what happened, where, and when. Don't include phone numbers or personal details.</p>
-        <textarea id="reportText" rows="6" maxlength="1000" aria-label="Describe the problem" placeholder="e.g. Heavy waterlogging near Velachery railway station. Vehicles are moving very slowly."></textarea>
+        <label class="field-label" for="reportLanguage">Choose your language</label>
+        <select id="reportLanguage" aria-label="Report language">
+          <option value="English">English</option><option value="Tamil">தமிழ் (Tamil)</option>
+          <option value="Hindi">हिन्दी (Hindi)</option><option value="Malayalam">മലയാളം (Malayalam)</option>
+          <option value="Telugu">తెలుగు (Telugu)</option>
+        </select>
+        <textarea id="reportText" rows="6" maxlength="1000" aria-label="Describe the problem" placeholder="Describe what happened, where, and how it affects movement…"></textarea>
         <div class="row between"><small id="charCount">0 / 1000</small>
           <select id="reportSource" aria-label="Report source">
             <option>Citizen app</option><option>Social post</option><option>News</option><option>Complaint portal</option>
           </select>
         </div>
+        <div class="row wrap voice-row">
+          <button id="voiceBtn" class="btn" type="button">🎙 Start voice typing</button><small id="voiceStatus" class="hint" role="status">Voice typing works in supported browsers (Chrome / Edge).</small>
+        </div>
         <div class="row wrap">
           <button id="previewBtn" class="btn">🔍 Preview analysis</button>
           <button id="submitBtn" class="btn primary">📨 Submit report</button>
           <button id="clearBtn" class="btn">Clear</button>
+        </div>
+        <p class="hint">Your selected language is saved with the report. Voice typing uses your browser speech service; availability may depend on browser, microphone permission and internet connection.</p>
+        <div class="card" style="margin-top:14px;padding:14px">
+          <h3>Track your submitted report</h3>
+          <p class="hint">Enter the tracking ID shown after submission (example: MDR-000123).</p>
+          <div class="row wrap"><input id="trackingInput" aria-label="Tracking ID" placeholder="MDR-000123"><button id="trackBtn" class="btn small" type="button">Track report</button></div>
+          <div id="trackingResult" aria-live="polite"></div>
         </div>
         <p class="hint">Try an example:</p>
         <div id="sampleChips" class="chips"></div>
@@ -194,6 +212,7 @@
         <li><b>Duplicate grouping</b> – similar reports in the same place and time become one possible incident. Copy-pasted posts do not raise confidence.</li>
         <li><b>Dashboard</b> – map, analytics and filters. Officials verify, resolve or reject incidents.</li>
       </ol>
+      <p><b>Data transparency:</b> reports come from citizen submissions, administrator CSV imports and clearly labelled sample/demo data. Gemini interprets submitted text; it does not itself provide live traffic data. No automatic Google Maps, social-media, CCTV or government-feed ingestion is connected in this prototype.</p>
       <p><b>Important:</b> severity is an estimate and reports are unverified until an official confirms them. This tool supports decisions; it does not replace official verification.</p>
       <p>Official demo PIN: <code>1234</code> (set the <code>OFFICIAL_PIN</code> environment variable to change it).</p>
       <div class="row wrap">
@@ -205,7 +224,7 @@
 </main>
 
 <footer class="footer">
-  <p>MADRITHM · Prototype for demonstration. Severity is an estimate and does not replace official verification. Map © OpenStreetMap contributors.</p>
+  <p>MADRITHM · Mobility intelligence prototype. Reports are citizen-submitted or demo/import data; live traffic feeds are not connected. Severity is an estimate and requires official verification. Map © OpenStreetMap contributors.</p>
 </footer>
 
 <div id="modal" class="modal" hidden>

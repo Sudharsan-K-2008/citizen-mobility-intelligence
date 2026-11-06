@@ -4,6 +4,7 @@ SAMPLE_REPORTS = [
     ("Accident near Guindy bridge. Traffic completely stopped.", "News"),
     ("Heavy traffic near Guindy because of an accident. Vehicles are stuck for more than 30 minutes.", "Social post"),
     ("Waterlogging reported near Velachery railway station after heavy rain.", "Citizen app"),
+    ("A huge amount of water has accumulated near Velachery railway station after continuous rainfall. School buses are unable to move properly, and people are struggling to cross the road.", "Citizen app"),
     ("Heavy waterlogging near Velachery. Vehicles are moving very slowly.", "Social post"),
     ("A huge pothole near Anna Nagar is causing problems for two-wheelers.", "Citizen app"),
     ("Bus 21G is delayed by 40 minutes at Tambaram railway station. Very frustrated!!", "Complaint portal"),

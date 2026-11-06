@@ -32,7 +32,7 @@ if (window.Chart) {
   Chart.defaults.elements.arc.borderColor = "#0d1226";
 }
 let pin = sessionStorage.getItem("cmi_pin") || "";
-let map, markerLayer, markerRefs = {}, charts = [], currentTab = "dashboard", busy = false;
+let map, markerLayer, heatLayer, heatVisible = false, markerRefs = {}, charts = [], currentTab = "dashboard", busy = false;
 
 /* ---------- API ---------- */
 async function api(path, opts = {}) {
@@ -126,6 +126,9 @@ function initMap() {
     maxZoom: 19, attribution: "© OpenStreetMap contributors",
   }).addTo(map);
   markerLayer = L.layerGroup().addTo(map);
+  heatLayer = L.layerGroup().addTo(map);
+  const heatBtn = $("#heatToggle");
+  if (heatBtn) heatBtn.onclick = () => { heatVisible = !heatVisible; if (heatVisible) heatLayer.addTo(map); else map.removeLayer(heatLayer); heatBtn.textContent = heatVisible ? "🔥 Hide density layer" : "🔥 Show density layer"; heatBtn.setAttribute("aria-pressed", String(heatVisible)); };
   map.on("popupopen", e => {
     const btn = e.popup.getElement().querySelector("[data-open]");
     if (btn) btn.onclick = () => openIncident(+btn.dataset.open);
@@ -138,10 +141,12 @@ function popupHtml(i) {
     <button class="btn small" data-open="${i.id}" style="margin-top:6px">View details</button></div>`;
 }
 function renderMap(list) {
-  markerLayer.clearLayers(); markerRefs = {};
+  markerLayer.clearLayers(); heatLayer.clearLayers(); markerRefs = {};
   const pts = [];
   list.filter(i => i.lat != null && i.lng != null).forEach(i => {
     const faded = i.status === "resolved";
+    // Density rings are a visual aggregation of reported incidents, not live sensor data.
+    L.circle([i.lat, i.lng], { radius: 180 + Math.min(i.report_count || 1, 12) * 85, color: "#a855f7", weight: 1, opacity: 0.22, fillColor: "#8b5cf6", fillOpacity: 0.10 }).addTo(heatLayer);
     const m = L.circleMarker([i.lat, i.lng], {
       radius: 9 + Math.min(i.report_count, 8) * 1.6, color: "#fff", weight: 2,
       fillColor: faded ? "#868e96" : SEV_COLOR[i.severity_label] || "#555", fillOpacity: faded ? 0.45 : 0.85,
@@ -166,7 +171,7 @@ function renderKPIs(s) {
   const set = (sel, v) => { const el = $(sel); if (!el) return; window.FX ? FX.countTo(el, v) : (el.textContent = v); };
   set("#kReports", s.total_reports); set("#kIncidents", s.incidents);
   set("#kHigh", s.high_critical); set("#kVerified", s.verified);
-  set("#kReview", s.needs_review); set("#kFiltered", s.filtered_out);
+  set("#kReview", s.needs_review); set("#kFiltered", s.filtered_out); set("#kDuplicates", s.duplicate_reports || 0);
   set("#hReports", s.total_reports); set("#hIncidents", s.incidents); set("#hHigh", s.high_critical);
   $("#emptyBanner").hidden = s.total_reports > 0;
 }
@@ -174,7 +179,7 @@ function incidentItem(i, withMapFocus) {
   return `<div class="item" data-id="${i.id}" data-focus="${withMapFocus ? 1 : 0}">
     <div class="row between" style="margin:0"><b>${catName(i.category)}</b>${sevBadge(i.severity_label, i.severity_score)}</div>
     <div class="t">📍 ${esc(i.location_text || "Unknown location – needs review")}</div>
-    <div class="meta"><span class="pill ${i.status}">${STATUS[i.status]}</span><span>${i.report_count} report(s)</span><span>${fmtTime(i.last_seen)}</span></div></div>`;
+    <div class="meta"><span class="pill ${i.status}">${STATUS[i.status]}</span><span>${i.report_count} unique report(s)</span><span>Impact ${i.mobility_impact_score ?? "—"}/100</span><span>${fmtTime(i.last_seen)}</span></div></div>`;
 }
 function renderPriority(list) {
   const top = list.filter(i => !["resolved", "rejected"].includes(i.status)).slice(0, 8);
@@ -195,8 +200,8 @@ function renderIncidentList(list) {
       <div class="row between" style="margin:0"><b>${catName(i.category)}</b>${sevBadge(i.severity_label, i.severity_score)}</div>
       <div class="t">📍 ${esc(i.location_text || "Unknown location – needs review")}</div>
       <div class="t quote">“${esc(i.sample_text || "")}”</div>
-      <div class="meta"><span class="pill ${i.status}">${STATUS[i.status]}</span><span>${i.report_count} report(s) · ${i.independent_count} independent</span>
-      <span>Confidence ${Math.round(i.confidence * 100)}%</span><span>${fmtTime(i.last_seen)}</span></div></div>`).join("")
+      <div class="meta"><span class="pill ${i.status}">${STATUS[i.status]}</span><span>${i.report_count} unique report(s)</span>
+      <span>Confidence ${Math.round(i.confidence * 100)}%</span><span>Impact ${i.mobility_impact_score ?? "—"}/100</span><span>${fmtTime(i.last_seen)}</span></div></div>`).join("")
     : `<p class="hint">No incidents match the filters.</p>`;
 }
 document.addEventListener("click", e => {
@@ -254,12 +259,20 @@ async function openIncident(id) {
       <div class="kv">
         <b>Location</b><span>${inc.location_text ? "📍 " + esc(inc.location_text) : `<span class="warn">Unknown – needs manual review</span>`}</span>
         <b>First / last report</b><span>${fmtTime(inc.first_seen)} → ${fmtTime(inc.last_seen)}</span>
-        <b>Reports</b><span>${inc.report_count} total · ${inc.independent_count} independent (copies don't count)</span>
+        <b>Unique reports</b><span>${inc.report_count} (exact duplicate copies excluded)</span>
+        <b>Mobility impact score</b><span><strong>${inc.mobility_impact_score}/100</strong> <small class="hint">Heuristic triage estimate, not a measured passenger count.</small></span>
+        <b>Emergency access screening</b><span>${inc.emergency_access_flag ? `<span class="warn">⚠ Potential access concern — manual review required</span>` : "No high-priority access flag from current rules"}</span>
+        <b>Crowd confirmations</b><span id="crowdCount">${inc.crowd_confirmations || 0} citizen confirmation(s)</span>
         <b>Confidence</b><span><span class="bar"><i style="width:${Math.round(inc.confidence * 100)}%"></i></span> ${Math.round(inc.confidence * 100)}%</span>
         <b>Public mood</b><span>${inc.avg_sentiment < -0.2 ? "😠 Negative" : inc.avg_sentiment > 0.2 ? "🙂 Positive" : "😐 Neutral"}</span>
         <b>Why this severity</b><span>${esc(top ? top.severity_reason : "")}<br><small class="hint">Estimate only, not a confirmed emergency assessment.</small></span>
       </div>
       ${inc.lat != null ? `<button class="btn small" id="locBtn">🗺 Show on map</button>` : ""}
+      <button class="btn small" id="confirmIncident">👍 I can confirm this issue</button>
+      <button class="btn small" id="translateIncident">🌐 Translate reports to English</button>
+      <div id="translationOutput"></div>
+      <h3 style="margin-top:14px">Incident timeline</h3>
+      <div class="reports">${(inc.events || []).map(ev => `<div class="rep"><b>${esc(ev.event_type === "status" ? "Status update" : "Incident created")}</b><div>${esc(ev.details)}</div><small>${fmtTime(ev.created_at)}</small></div>`).join("") || `<p class="hint">Timeline events will appear as officials update this incident.</p>`}</div>
       <h3 style="margin-top:14px">Reports in this group</h3>
       <div class="reports">${inc.reports.map(r => `<div class="rep">${esc(r.text)}
         <div class="meta">${esc(r.source)} · ${esc(r.language)} · ${r.sentiment} · ${fmtTime(r.incident_time)}${r.duration_min ? " · " + r.duration_min + " min" : ""}
@@ -278,6 +291,26 @@ async function openIncident(id) {
     `);
     const lb = $("#locBtn");
     if (lb) lb.onclick = () => { closeModal(); showTab("dashboard"); setTimeout(() => focusIncident(inc.id), 150); };
+    const confirmBtn = $("#confirmIncident");
+    if (confirmBtn) confirmBtn.onclick = async () => {
+      let key = localStorage.getItem("madrithm_voter_key");
+      if (!key) { key = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}-${Math.random()}`); localStorage.setItem("madrithm_voter_key", key); }
+      try { const result = await api(`/incidents/${id}/confirm`, { method: "POST", body: JSON.stringify({ voter_key: key }) });
+        $("#crowdCount").textContent = `${result.confirmations} citizen confirmation(s)`;
+        toast(result.already_confirmed ? "You have already confirmed this incident." : "Thanks. Your confirmation was recorded.", "success");
+      } catch (e) { toast(e.message, "error"); }
+    };
+    const translateBtn = $("#translateIncident");
+    if (translateBtn) translateBtn.onclick = async () => {
+      const target = "English";
+      const report = inc.reports.find(r => r.language && r.language !== "English") || inc.reports[0];
+      if (!report) return;
+      translateBtn.disabled = true; translateBtn.textContent = "Translating…";
+      try { const result = await api("/translate", { method: "POST", body: JSON.stringify({ text: report.text, target }) });
+        $("#translationOutput").innerHTML = `<div class="notice"><b>English translation (Gemini)</b><p>${esc(result.translation)}</p><small>Original report remains unchanged.</small></div>`;
+      } catch (e) { $("#translationOutput").innerHTML = `<p class="hint">${esc(e.message)}</p>`; }
+      translateBtn.disabled = false; translateBtn.textContent = "🌐 Translate reports to English";
+    };
     $$("[data-st]", $("#modalBody")).forEach(b => (b.onclick = async () => {
       try { await api("/incidents/" + id, { method: "PATCH", body: JSON.stringify({ status: b.dataset.st }) }); toast("Status updated: " + STATUS[b.dataset.st], "success"); await loadAll(); openIncident(id); }
       catch (e) { toast(e.message, "error"); }
@@ -301,10 +334,14 @@ $("#reportText").addEventListener("input", e => ($("#charCount").textContent = `
 $("#clearBtn").onclick = () => { $("#reportText").value = ""; $("#charCount").textContent = "0 / 1000"; $("#resultBox").innerHTML = `<p class="hint">Your report's analysis appears here.</p>`; };
 
 function resultHtml(a, meta) {
+  const engineLabel = a.engine === "rules+gemini"
+    ? "Gemini contextual assist + NLP rules"
+    : "Rule-based NLP fallback";
   if (!a.relevant) {
     return `<div class="result muted-card"><h3>🚫 Not identified as a mobility incident</h3>
       <p>${esc(a.note)}</p><p class="hint">It will not appear on the map or in incident counts.</p>
-      <div class="meta"><span>Language: ${esc(a.language)}</span><span>Sentiment: ${esc(a.sentiment)}</span></div></div>`;
+      ${meta?.tracking_id ? `<div class="notice">🎫 Report tracking ID: <b>${esc(meta.tracking_id)}</b></div>` : ""}
+      <div class="meta"><span>Language: ${esc(a.language)}</span><span>Sentiment: ${esc(a.sentiment)}</span><span>Analysis: ${engineLabel}</span></div></div>`;
   }
   const loc = a.lat != null
     ? `📍 ${esc(a.location_text)} <small>(${esc(a.geo_method)}, ${Math.round(a.geo_confidence * 100)}% sure)</small>`
@@ -315,7 +352,8 @@ function resultHtml(a, meta) {
       ? `<div class="notice copy">⚠ This looks identical to an earlier post, so it was attached to incident #${meta.incident.id} but <b>does not raise confidence</b>.</div>`
       : meta.new_incident
         ? `<div class="notice">🆕 Created new possible incident <b>#${meta.incident.id}</b> (unverified).</div>`
-        : `<div class="notice">🔗 Grouped with incident <b>#${meta.incident.id}</b> – now ${meta.incident.report_count} reports, ${meta.incident.independent_count} independent, confidence ${Math.round(meta.incident.confidence * 100)}%.</div>`;
+        : `<div class="notice">🔗 Grouped with incident <b>#${meta.incident.id}</b> – now ${meta.incident.report_count} unique reports (exact copies excluded), confidence ${Math.round(meta.incident.confidence * 100)}%.</div>`;
+    extra += `<div class="notice">🎫 Your tracking ID: <b>${esc(meta.tracking_id || `MDR-${String(meta.report_id).padStart(6, "0")}`)}</b>. Save this ID to check progress.</div>`;
     extra += `<button class="btn small" onclick="openIncident(${meta.incident.id})">View incident</button>`;
   } else extra = `<p class="hint">This is only a preview. Nothing has been saved yet.</p>`;
   return `<div class="result"><h3>${catName(a.category)} — ${esc(a.sub_issue)}</h3>
@@ -327,6 +365,7 @@ function resultHtml(a, meta) {
       <b>Severity</b><span>${sevBadge(a.severity_label, a.severity_score)}<br><small>${esc(a.severity_reason)}</small></span>
       <b>Sentiment</b><span>${esc(a.sentiment)} (${a.sentiment_score})</span>
       <b>Language</b><span>${esc(a.language)}</span>
+      <b>Analysis engine</b><span>${engineLabel}</span>
     </div>${extra}</div>`;
 }
 
@@ -335,7 +374,7 @@ $("#previewBtn").onclick = async () => {
   const text = $("#reportText").value.trim();
   if (text.length < 8) return toast("Please write a few more words.", "error");
   const b = $("#previewBtn"); setBusy(b, true, "Analysing…");
-  try { $("#resultBox").innerHTML = resultHtml(await api("/analyze", { method: "POST", body: JSON.stringify({ text }) }), null); }
+  try { $("#resultBox").innerHTML = resultHtml(await api("/analyze", { method: "POST", body: JSON.stringify({ text, language: $("#reportLanguage").value }) }), null); }
   catch (e) { toast(e.message, "error"); }
   setBusy(b, false);
 };
@@ -344,14 +383,88 @@ $("#submitBtn").onclick = async () => {
   if (text.length < 8) return toast("Please write a few more words.", "error");
   const b = $("#submitBtn"); setBusy(b, true, "Submitting…");
   try {
-    const res = await api("/reports", { method: "POST", body: JSON.stringify({ text, source: $("#reportSource").value }) });
-    $("#resultBox").innerHTML = resultHtml(res.analysis, res.incident ? res : null);
+    const res = await api("/reports", { method: "POST", body: JSON.stringify({ text, source: $("#reportSource").value, language: $("#reportLanguage").value }) });
+    $("#resultBox").innerHTML = resultHtml(res.analysis, res);
     toast(res.analysis.relevant ? "Report submitted. Thank you!" : "Report received, but it isn't about transport.", res.analysis.relevant ? "success" : "");
     $("#reportText").value = ""; $("#charCount").textContent = "0 / 1000";
     loadAll();
   } catch (e) { toast(e.message, "error"); }
   setBusy(b, false);
 };
+
+async function trackSubmittedReport() {
+  const raw = $("#trackingInput").value.trim().toUpperCase();
+  const match = raw.match(/^MDR-(\d{1,10})$/);
+  if (!match) { toast("Enter a tracking ID like MDR-000123.", "error"); return; }
+  const box = $("#trackingResult"); box.innerHTML = `<p class="hint">Checking your report…</p>`;
+  try {
+    const data = await api("/track/" + Number(match[1]));
+    if (!data.relevant) { box.innerHTML = `<div class="notice">${esc(data.message)}<br>Received: ${fmtTime(data.created_at)}</div>`; return; }
+    box.innerHTML = `<div class="notice"><b>${esc(data.tracking_id)}</b><p>${esc(data.incident.category)} · ${esc(data.incident.location_text || "Location pending")}</p><p>Status: <b>${esc(STATUS[data.incident.status] || data.incident.status)}</b></p><p>Unique reports grouped: ${data.incident.report_count}</p><div class="reports">${(data.events || []).map(e => `<div class="rep">${esc(e.details)}<small>${fmtTime(e.created_at)}</small></div>`).join("")}</div></div>`;
+  } catch (e) { box.innerHTML = `<p class="hint">${esc(e.message)}</p>`; }
+}
+$("#trackBtn").onclick = trackSubmittedReport;
+$("#trackingInput").addEventListener("keydown", e => { if (e.key === "Enter") trackSubmittedReport(); });
+
+const languagePlaceholders = {
+  English: "e.g. Heavy waterlogging near Velachery railway station. Buses cannot move.",
+  Tamil: "உதாரணம்: வேளச்சேரி ரயில் நிலையம் அருகே மழைநீர் தேங்கி, பேருந்துகள் செல்ல முடியவில்லை.",
+  Hindi: "उदाहरण: वेलाचेरी रेलवे स्टेशन के पास जलभराव है और बसें आगे नहीं बढ़ पा रही हैं।",
+  Malayalam: "ഉദാഹരണം: വേളച്ചേരി റെയിൽവേ സ്റ്റേഷന് സമീപം വെള്ളക്കെട്ട് കാരണം ബസുകൾക്ക് നീങ്ങാൻ കഴിയുന്നില്ല.",
+  Telugu: "ఉదాహరణ: వేళచ్చేరి రైల్వే స్టేషన్ దగ్గర నీరు నిలిచిపోవడంతో బస్సులు వెళ్లలేకపోతున్నాయి."
+};
+$("#reportLanguage").addEventListener("change", () => {
+  $("#reportText").placeholder = languagePlaceholders[$("#reportLanguage").value] || languagePlaceholders.English;
+});
+
+/* ---------- multilingual voice-to-text ---------- */
+const speechLang = { English: "en-IN", Tamil: "ta-IN", Hindi: "hi-IN", Malayalam: "ml-IN", Telugu: "te-IN" };
+let speechRecognition = null;
+const voiceBtn = $("#voiceBtn"), voiceStatus = $("#voiceStatus");
+function stopVoiceUI(message) {
+  if (voiceBtn) { voiceBtn.textContent = "🎙 Start voice typing"; voiceBtn.classList.remove("recording"); }
+  if (voiceStatus && message) voiceStatus.textContent = message;
+}
+if (voiceBtn) {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    voiceBtn.addEventListener("click", () => toast("Voice typing is not supported in this browser. Try the latest Chrome or Edge.", "error"));
+    voiceBtn.title = "Speech recognition is not supported by this browser";
+  } else {
+    speechRecognition = new SpeechRecognition();
+    speechRecognition.continuous = true;
+    speechRecognition.interimResults = true;
+    speechRecognition.maxAlternatives = 1;
+    let finalTranscript = "";
+    speechRecognition.onstart = () => { voiceBtn.textContent = "⏹ Stop voice typing"; voiceBtn.classList.add("recording"); voiceStatus.textContent = "Listening… speak clearly. Select your language before starting."; };
+    speechRecognition.onresult = event => {
+      let interim = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const phrase = event.results[i][0].transcript;
+        if (event.results[i].isFinal) finalTranscript += phrase + " "; else interim += phrase;
+      }
+      const box = $("#reportText");
+      box.value = (finalTranscript + interim).trim().slice(0, 1000);
+      $("#charCount").textContent = `${box.value.length} / 1000`;
+    };
+    speechRecognition.onerror = event => {
+      const messages = { "not-allowed": "Microphone permission was blocked. Allow microphone access in your browser settings.", "no-speech": "No speech detected. Tap the microphone and try again.", "network": "Speech service network error. Check your connection and retry." };
+      stopVoiceUI(messages[event.error] || `Voice input stopped: ${event.error}.`);
+    };
+    speechRecognition.onend = () => stopVoiceUI("Voice typing stopped. You can edit the text before submitting.");
+    voiceBtn.addEventListener("click", () => {
+      if (voiceBtn.classList.contains("recording")) { speechRecognition.stop(); return; }
+      finalTranscript = $("#reportText").value.trim();
+      if (finalTranscript) finalTranscript += " ";
+      speechRecognition.lang = speechLang[$("#reportLanguage").value] || "en-IN";
+      try { speechRecognition.start(); } catch (err) { toast("Voice typing is already starting. Please wait a moment.", "error"); }
+    });
+    $("#reportLanguage").addEventListener("change", () => {
+      if (voiceBtn.classList.contains("recording")) speechRecognition.stop();
+      voiceStatus.textContent = `Voice language set to ${$("#reportLanguage").selectedOptions[0].textContent}.`;
+    });
+  }
+}
 
 /* ---------- sample data / reset / export ---------- */
 async function seed(btn, size = "small") {

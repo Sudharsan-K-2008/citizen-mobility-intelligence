@@ -2,6 +2,8 @@ import csv
 import io
 import os
 import hmac
+import hashlib
+import sqlite3
 
 from dotenv import load_dotenv
 load_dotenv()  # Load local .env before importing modules that read API keys.
@@ -16,7 +18,7 @@ from service import submit_report, recompute_incident
 from sample_data import SAMPLE_REPORTS, generate_demo
 import locations as loc_mod
 
-OFFICIAL_PIN = os.environ.get("OFFICIAL_PIN", "1234")   # change for real use
+OFFICIAL_PIN = os.environ.get("OFFICIAL_PIN", "0123")   # change for real use
 ALLOWED_SOURCES = {"Citizen app", "Social post", "News", "Complaint portal"}
 VALID_STATUS = {"unverified", "verified", "resolved", "rejected"}
 
@@ -63,6 +65,12 @@ def incident_detail(iid):
     if not inc:
         return None
     inc["reports"] = query_all("SELECT * FROM reports WHERE incident_id=? ORDER BY incident_time, id", (iid,))
+    inc["events"] = query_all("SELECT * FROM incident_events WHERE incident_id=? ORDER BY id", (iid,))
+    inc["crowd_confirmations"] = query_one("SELECT COUNT(*) c FROM crowd_votes WHERE incident_id=?", (iid,))["c"]
+    # Transparent heuristic score for triage only; never a dispatch or route-safety decision.
+    impact = min(100, int((inc.get("severity_score") or 0) * 0.55 + min(inc.get("report_count") or 1, 10) * 3 + (12 if inc.get("category") in {"waterlogging", "road_closure", "accident"} else 0)))
+    inc["mobility_impact_score"] = impact
+    inc["emergency_access_flag"] = bool(impact >= 65 or inc.get("category") in {"accident", "road_closure"})
     return inc
 
 
@@ -84,7 +92,9 @@ def preview():
     text = ((request.get_json(silent=True) or {}).get("text") or "").strip()
     if len(text) < 8:
         return jsonify(error="Please describe the issue in a few words."), 400
-    return jsonify(analyze(text[:1000]))
+    language = (request.get_json(silent=True) or {}).get("language")
+    if language not in {"English", "Tamil", "Hindi", "Malayalam", "Telugu"}: language = None
+    return jsonify(analyze(text[:1000], language_hint=language))
 
 
 @app.post("/api/reports")
@@ -96,7 +106,65 @@ def create_report():
     if len(text) > 1000:
         return jsonify(error="Report is too long (max 1000 characters)."), 400
     source = data.get("source") if data.get("source") in ALLOWED_SOURCES else "Citizen app"
-    return jsonify(submit_report(text, source)), 201
+    language = data.get("language") if data.get("language") in {"English", "Tamil", "Hindi", "Malayalam", "Telugu"} else None
+    return jsonify(submit_report(text, source, language=language)), 201
+
+
+@app.get("/api/track/<int:report_id>")
+def track_report(report_id):
+    row = query_one("SELECT id,incident_id,relevant,category,location_text,created_at FROM reports WHERE id=?", (report_id,))
+    if not row:
+        return jsonify(error="Tracking ID not found. Check the number and try again."), 404
+    if not row["relevant"] or not row["incident_id"]:
+        return jsonify(tracking_id=f"MDR-{report_id:06d}", report_id=report_id, relevant=False,
+                       message="Your report was received but was not grouped as a mobility incident.", created_at=row["created_at"])
+    inc = query_one("SELECT id,status,category,location_text,first_seen,last_seen,report_count,severity_label FROM incidents WHERE id=?", (row["incident_id"],))
+    return jsonify(tracking_id=f"MDR-{report_id:06d}", report_id=report_id, relevant=True, incident=inc,
+                   events=query_all("SELECT event_type,details,created_at FROM incident_events WHERE incident_id=? ORDER BY id", (row["incident_id"],)))
+
+
+@app.post("/api/incidents/<int:iid>/confirm")
+def confirm_incident(iid):
+    data = request.get_json(silent=True) or {}
+    voter = str(data.get("voter_key", ""))[:128]
+    if len(voter) < 12:
+        return jsonify(error="Please refresh the page and try again."), 400
+    if not query_one("SELECT id FROM incidents WHERE id=?", (iid,)):
+        return jsonify(error="Incident not found."), 404
+    voter_hash = hashlib.sha256(voter.encode()).hexdigest()
+    try:
+        with db() as conn:
+            conn.execute("INSERT INTO crowd_votes (incident_id,voter_hash,created_at) VALUES (?,?,?)",
+                         (iid, voter_hash, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        return jsonify(ok=True, confirmed=True, confirmations=query_one("SELECT COUNT(*) c FROM crowd_votes WHERE incident_id=?", (iid,))["c"])
+    except sqlite3.IntegrityError:
+        return jsonify(ok=True, already_confirmed=True, confirmations=query_one("SELECT COUNT(*) c FROM crowd_votes WHERE incident_id=?", (iid,))["c"])
+
+
+@app.post("/api/translate")
+def translate_report():
+    data = request.get_json(silent=True) or {}
+    text = str(data.get("text", "")).strip()
+    target = str(data.get("target", "English"))
+    if not text or len(text) > 1000:
+        return jsonify(error="Enter a report of 1–1000 characters."), 400
+    if target not in {"English", "Tamil", "Hindi", "Malayalam", "Telugu"}:
+        return jsonify(error="Unsupported target language."), 400
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not key:
+        return jsonify(error="Translation needs a configured Gemini API key. Your original report is unchanged."), 503
+    import requests
+    model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    prompt = f"Translate the following citizen mobility complaint into {target}. Preserve place names, road names, bus numbers and meaning. Do not add facts. Return only the translation.\n\n{text}"
+    try:
+        response = requests.post(url, headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+            json={"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"temperature":0.1,"maxOutputTokens":500}}, timeout=15)
+        response.raise_for_status()
+        translated = response.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return jsonify(translation=translated, target=target, engine="Gemini")
+    except Exception:
+        return jsonify(error="Translation service is unavailable right now. The original report is preserved."), 502
 
 
 @app.get("/api/reports")
@@ -111,6 +179,9 @@ def list_incidents():
     rows = query_all(
         f"""SELECT i.*, (SELECT text FROM reports r WHERE r.incident_id=i.id ORDER BY r.id DESC LIMIT 1) AS sample_text
             FROM incidents i WHERE {where} ORDER BY i.severity_score DESC, i.last_seen DESC LIMIT 500""", params)
+    for row in rows:
+        row["mobility_impact_score"] = min(100, int((row.get("severity_score") or 0) * 0.55 + min(row.get("report_count") or 1, 10) * 3 + (12 if row.get("category") in {"waterlogging", "road_closure", "accident"} else 0)))
+        row["emergency_access_flag"] = bool(row["mobility_impact_score"] >= 65 or row.get("category") in {"accident", "road_closure"})
     return jsonify(rows)
 
 
@@ -130,7 +201,11 @@ def update_incident(iid):
         if "status" in data:
             if data["status"] not in VALID_STATUS:
                 return jsonify(error="Invalid status."), 400
+            old_status = conn.execute("SELECT status FROM incidents WHERE id=?", (iid,)).fetchone()["status"]
             conn.execute("UPDATE incidents SET status=? WHERE id=?", (data["status"], iid))
+            if old_status != data["status"]:
+                conn.execute("INSERT INTO incident_events (incident_id,event_type,details,created_at) VALUES (?,?,?,?)",
+                             (iid, "status", f"Status changed: {old_status} → {data['status']}", datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         if "notes" in data:
             conn.execute("UPDATE incidents SET notes=? WHERE id=?", (str(data["notes"])[:1000], iid))
         recompute_incident(conn, iid)
@@ -151,7 +226,9 @@ def stats():
         d = (today - timedelta(days=k)).strftime("%Y-%m-%d")
         trend.append({"date": d, "count": trend_rows.get(d, 0)})
     return jsonify({
-        "total_reports": query_one("SELECT COUNT(*) c FROM reports")["c"],
+        "total_reports": query_one("SELECT COUNT(*) c FROM reports WHERE is_copy=0")["c"],
+        "duplicate_reports": query_one("SELECT COUNT(*) c FROM reports WHERE is_copy=1")["c"],
+        "total_submissions": query_one("SELECT COUNT(*) c FROM reports")["c"],
         "filtered_out": query_one("SELECT COUNT(*) c FROM reports WHERE relevant=0")["c"],
         "incidents": query_one(f"SELECT COUNT(*) c {frm}", params)["c"],
         "high_critical": query_one(f"SELECT COUNT(*) c {frm} AND i.severity_label IN ('High','Critical') AND {active}", params)["c"],
